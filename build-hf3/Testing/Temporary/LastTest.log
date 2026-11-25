@@ -1,0 +1,105 @@
+Start testing: Nov 25 12:45 CST
+----------------------------------------------------------
+65/117 Testing: region
+65/117 Test: region
+Command: "/home/liiing/feedback/uid39042/build-hf3/tests/region"
+Directory: /home/liiing/feedback/uid39042/build-hf3/tests
+"region" start time: Nov 25 12:45 CST
+Output:
+----------------------------------------------------------
+Randomness seeded to: 200136009
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+region is a Catch2 v3.7.1 host application.
+Run with -? for options
+
+-------------------------------------------------------------------------------
+create regions
+-------------------------------------------------------------------------------
+/home/liiing/feedback/uid39042/tests/region.cc:51
+...............................................................................
+
+/home/liiing/feedback/uid39042/tests/region.cc:65: FAILED:
+  REQUIRE( err.code == heif_error_Ok )
+with expansion:
+  3 == 0
+
+-------------------------------------------------------------------------------
+create mask region
+-------------------------------------------------------------------------------
+/home/liiing/feedback/uid39042/tests/region.cc:233
+...............................................................................
+
+/home/liiing/feedback/uid39042/tests/region.cc:250: FAILED:
+  REQUIRE( err.code == heif_error_Ok )
+with expansion:
+  3 == 0
+
+-------------------------------------------------------------------------------
+create inline mask region from data
+-------------------------------------------------------------------------------
+/home/liiing/feedback/uid39042/tests/region.cc:358
+...............................................................................
+
+/home/liiing/feedback/uid39042/tests/region.cc:375: FAILED:
+  REQUIRE( err.code == heif_error_Ok )
+with expansion:
+  3 == 0
+
+-------------------------------------------------------------------------------
+inline mask region followed by another region
+-------------------------------------------------------------------------------
+/home/liiing/feedback/uid39042/tests/region.cc:453
+...............................................................................
+
+/home/liiing/feedback/uid39042/tests/region.cc:475: FAILED:
+  REQUIRE( err.code == heif_error_Ok )
+with expansion:
+  3 == 0
+
+-------------------------------------------------------------------------------
+create inline mask region from image
+-------------------------------------------------------------------------------
+/home/liiing/feedback/uid39042/tests/region.cc:582
+...............................................................................
+
+/home/liiing/feedback/uid39042/tests/region.cc:599: FAILED:
+  REQUIRE( err.code == heif_error_Ok )
+with expansion:
+  3 == 0
+
+-------------------------------------------------------------------------------
+inline mask region from oversized image is cropped
+-------------------------------------------------------------------------------
+/home/liiing/feedback/uid39042/tests/region.cc:720
+...............................................................................
+
+/home/liiing/feedback/uid39042/tests/region.cc:731: FAILED:
+  REQUIRE( err.code == heif_error_Ok )
+with expansion:
+  3 == 0
+
+-------------------------------------------------------------------------------
+inline mask region data length must match region geometry
+-------------------------------------------------------------------------------
+/home/liiing/feedback/uid39042/tests/region.cc:803
+...............................................................................
+
+/home/liiing/feedback/uid39042/tests/region.cc:814: FAILED:
+  REQUIRE( err.code == heif_error_Ok )
+with expansion:
+  3 == 0
+
+===============================================================================
+test cases:  9 |  2 passed | 7 failed
+assertions: 60 | 53 passed | 7 failed
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Failed.
+"region" end time: Nov 25 12:45 CST
+"region" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Nov 25 12:45 CST

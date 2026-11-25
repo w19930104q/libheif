@@ -366,6 +366,19 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem_Overlay::decode_overlay_image(
   uint16_t bkg_color[4];
   m_overlay_spec.get_background_color(bkg_color);
 
+  // The canvas carries an alpha plane from the start, initialized to the
+  // background color's alpha. Without it, the background alpha was discarded and
+  // every input was blended as if the canvas were fully opaque: a semi-transparent
+  // lower layer "covered" the layers above it wherever they overlapped, and the
+  // transparent parts of a layer could be written over with nothing meaningful.
+  // The alpha plane lets HeifPixelImage::overlay() apply the standard source-over
+  // rule, so a layer only changes pixels its own alpha covers and the declared
+  // layer order decides every overlapping pixel.
+  if (auto error = img->add_channel(heif_channel_Alpha, w, h, canvas_bit_depth,
+                                    get_context()->get_security_limits())) {
+    return error;
+  }
+
   err = img->fill_RGB_16bit(bkg_color[0], bkg_color[1], bkg_color[2], bkg_color[3]);
   if (err) {
     return err;
@@ -535,6 +548,10 @@ void ImageItem_Overlay::populate_component_descriptions()
   emit(heif_channel_R, heif_cmpd_component_type_red);
   emit(heif_channel_G, heif_cmpd_component_type_green);
   emit(heif_channel_B, heif_cmpd_component_type_blue);
+  // The canvas is always built with an alpha plane (see decode_overlay_image),
+  // so the handle has to describe it. A caller that wants RGB without alpha gets
+  // the alpha flattened or dropped by the regular color-conversion pipeline.
+  emit(heif_channel_Alpha, heif_cmpd_component_type_alpha);
 }
 
 

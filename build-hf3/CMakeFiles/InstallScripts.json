@@ -1,0 +1,13 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/liiing/feedback/uid39042/build-hf3/cmake_install.cmake",
+		"/home/liiing/feedback/uid39042/build-hf3/heifio/cmake_install.cmake",
+		"/home/liiing/feedback/uid39042/build-hf3/tests/cmake_install.cmake",
+		"/home/liiing/feedback/uid39042/build-hf3/libheif/cmake_install.cmake",
+		"/home/liiing/feedback/uid39042/build-hf3/libheif/plugins/cmake_install.cmake",
+		"/home/liiing/feedback/uid39042/build-hf3/gdk-pixbuf/cmake_install.cmake",
+		"/home/liiing/feedback/uid39042/build-hf3/gnome/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

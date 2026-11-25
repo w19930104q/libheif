@@ -216,3 +216,65 @@ TEST_CASE("overlay spec: write() and parse() round trip with automatic field siz
     REQUIRE(y == c.y);
   }
 }
+
+
+// The layer array is the composition order: write() has to emit the offset
+// entries in declaration order and parse() has to read them back in the same
+// order. The image ids themselves are not part of the 'iovl' payload; they are
+// paired with these offsets through the 'dimg' references, so at this level the
+// round-trip property is the ordered offset vector. Nothing may reorder the
+// entries by offset magnitude. The two orders below are the HF3 declaration
+// swap: same three layers, two entries exchanged.
+TEST_CASE("overlay spec: the layer declaration order and its offsets survive write and parse")
+{
+  struct Entry
+  {
+    heif_item_id image_id;
+    int32_t x, y;
+  };
+
+  const std::vector<Entry> hf3 = {
+      {10, 0, 0},     // 4x3 base covering the canvas
+      {20, 1, 0},     // semi-transparent badge, top-left area
+      {30, 2, 1},     // opaque corner mark, bottom-right area
+  };
+
+  const std::vector<size_t> orders[2] = {{0, 1, 2}, {0, 2, 1}};
+
+  for (const auto& order : orders) {
+    ImageOverlay ovl;
+    ovl.set_canvas_size(4, 3);
+    for (size_t i : order) {
+      ovl.add_image_on_top(hf3[i].image_id, hf3[i].x, hf3[i].y);
+    }
+
+    std::vector<uint8_t> data = ovl.write();
+
+    ImageOverlay parsed;
+    Error err = parsed.parse(3, data);
+    INFO("parse error: " << err.message);
+    REQUIRE(!err);
+    REQUIRE(parsed.get_num_offsets() == 3);
+
+    // write() keeps the declaration order of the whole stack, image ids included;
+    // parse() reproduces the same ordered offsets.
+    const auto& written_stack = ovl.get_overlay_stack();
+    const auto& parsed_stack = parsed.get_overlay_stack();
+    REQUIRE(written_stack.size() == order.size());
+    REQUIRE(parsed_stack.size() == order.size());
+    for (size_t i = 0; i < order.size(); i++) {
+      const Entry& expected = hf3[order[i]];
+      INFO("layer " << i);
+      CHECK(written_stack[i].image_id == expected.image_id);
+      CHECK(written_stack[i].x == expected.x);
+      CHECK(written_stack[i].y == expected.y);
+
+      int32_t x = 0, y = 0;
+      parsed.get_offset(static_cast<size_t>(i), &x, &y);
+      CHECK(x == expected.x);
+      CHECK(y == expected.y);
+      CHECK(parsed_stack[i].x == expected.x);
+      CHECK(parsed_stack[i].y == expected.y);
+    }
+  }
+}

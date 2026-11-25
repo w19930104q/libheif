@@ -2161,7 +2161,10 @@ Error HeifPixelImage::fill_RGB_16bit(uint16_t r, uint16_t g, uint16_t b, uint16_
 }
 
 
-// Blends one row of the overlay into the canvas: out = in * alpha + out * (1 - alpha).
+// Blends one row of the overlay into a canvas that has no alpha plane:
+// out = in * alpha + out * (1 - alpha). This is the source-over formula only
+// when the canvas is fully opaque; an overlay canvas keeps its own alpha plane
+// and is composed with blend_row_with_canvas_alpha() instead.
 template <typename T, typename A>
 static void blend_row(T* out, const T* in, const A* alpha, uint32_t n, uint32_t alpha_max)
 {
@@ -2172,6 +2175,62 @@ static void blend_row(T* out, const T* in, const A* alpha, uint32_t n, uint32_t 
     // in and out are at most 65535 and the two weights add up to alpha_max (at most 65535),
     // so the sum fits into 32 bits.
     out[x] = static_cast<T>((uint32_t{in[x]} * a + uint32_t{out[x]} * (alpha_max - a)) / alpha_max);
+  }
+}
+
+
+// Color part of straight-alpha source-over composition onto a canvas that
+// carries its own alpha plane. The canvas alpha is read-only here: this function
+// runs once per color channel, while the running canvas alpha is updated exactly
+// once per pixel by compose_alpha_row(). Given canvas color Cb with alpha Ab and
+// overlay color Cs with alpha As (both normalized to their own alpha_max):
+//   Aout = As + Ab * (1 - As)
+//   Cout = (Cs * As + Cb * Ab * (1 - As)) / Aout
+// All quantities are integer samples of at most 16 bits; the products are bounded
+// by 2^32, so uint32_t arithmetic is exact. Samples with Aout == 0 get a defined
+// (black, transparent) value instead of dividing by zero.
+template <typename T, typename A>
+static void blend_row_color_with_canvas_alpha(T* out_color, const A* canvas_alpha,
+                                               const T* in_color, const A* in_alpha,
+                                               uint32_t n, uint32_t alpha_max)
+{
+  for (uint32_t x = 0; x < n; x++) {
+    const uint32_t As = std::min<uint32_t>(in_alpha[x], alpha_max);
+    const uint32_t Ab = std::min<uint32_t>(canvas_alpha[x], alpha_max);
+    const uint32_t rest = alpha_max - As;                     // (1 - As) * alpha_max
+    const uint32_t Aout = As + (Ab * rest) / alpha_max;
+
+    if (Aout == 0) {
+      out_color[x] = 0;
+    }
+    else {
+      const uint32_t numerator = uint32_t{in_color[x]} * As
+                                 + uint32_t{out_color[x]} * ((Ab * rest) / alpha_max);
+      out_color[x] = static_cast<T>(numerator / Aout);
+    }
+  }
+}
+
+
+// Updates the running canvas alpha for one row, exactly once per pixel. An
+// overlay without an alpha plane is fully opaque and simply makes the covered
+// region opaque. With an overlay alpha:
+//   Aout = As + Ab * (1 - As)
+template <typename A, typename IA>
+static void compose_alpha_row(A* canvas_alpha, const IA* in_alpha,
+                              uint32_t n, uint32_t alpha_max, bool overlay_is_opaque)
+{
+  if (overlay_is_opaque) {
+    for (uint32_t x = 0; x < n; x++) {
+      canvas_alpha[x] = static_cast<A>(alpha_max);
+    }
+    return;
+  }
+
+  for (uint32_t x = 0; x < n; x++) {
+    const uint32_t As = std::min<uint32_t>(in_alpha[x], alpha_max);
+    const uint32_t Ab = std::min<uint32_t>(canvas_alpha[x], alpha_max);
+    canvas_alpha[x] = static_cast<A>(As + (Ab * (alpha_max - As)) / alpha_max);
   }
 }
 
@@ -2240,67 +2299,105 @@ Error HeifPixelImage::overlay(std::shared_ptr<HeifPixelImage>& overlay, int32_t 
     }
   }
 
+  const bool canvas_has_alpha = has_channel(heif_channel_Alpha);
+
   const int alpha_bytes = has_alpha ? bytes_per_sample_for_bit_depth(overlay->get_bits_per_pixel(heif_channel_Alpha)) : 0;
   const uint32_t alpha_max = has_alpha ? ((1U << overlay->get_bits_per_pixel(heif_channel_Alpha)) - 1) : 0;
 
+  // When both the canvas and the overlay carry an alpha plane, source-over
+  // composition needs both at the same sample depth: the running canvas alpha
+  // and the incoming alpha are blended in one integer domain.
+  if (has_alpha && canvas_has_alpha &&
+      get_bits_per_pixel(heif_channel_Alpha) != overlay->get_bits_per_pixel(heif_channel_Alpha)) {
+    return {heif_error_Unsupported_feature,
+            heif_suberror_Unspecified,
+            "Overlaying an alpha image onto a canvas with another alpha bit depth is not implemented"};
+  }
+
+  // The canvas alpha, if any, has to have the full canvas size for the same
+  // indexing reasons that check_plane_layout() enforces for the overlay.
+  if (canvas_has_alpha) {
+    if (get_width(heif_channel_Alpha) != get_width() ||
+        get_height(heif_channel_Alpha) != get_height()) {
+      return {heif_error_Unsupported_feature,
+              heif_suberror_Unspecified,
+              "Cannot overlay onto an image whose Alpha plane does not cover the whole image"};
+    }
+    if (get_bits_per_pixel(heif_channel_Alpha) > 16 ||
+        get_datatype(heif_channel_Alpha) != heif_component_datatype_unsigned_integer) {
+      return {heif_error_Unsupported_feature,
+              heif_suberror_Unspecified,
+              "Overlaying images is only implemented for unsigned samples of up to 16 bits"};
+    }
+  }
+
   size_t alpha_stride = 0;
-  uint8_t* alpha_p;
-  alpha_p = overlay->get_channel_memory(heif_channel_Alpha, &alpha_stride);
+  uint8_t* alpha_p = nullptr;
+  if (has_alpha) {
+    alpha_p = overlay->get_channel_memory(heif_channel_Alpha, &alpha_stride);
+  }
+
+  // The canvas alpha plane, when present, has the full canvas size and depth
+  // (checked above). These stay constant across the per-channel loop.
+  size_t canvas_alpha_stride = 0;
+  uint8_t* canvas_alpha_p = nullptr;
+  uint32_t canvas_alpha_max = 0;
+  int canvas_alpha_bytes = 0;
+  if (canvas_has_alpha) {
+    canvas_alpha_p = get_channel_memory(heif_channel_Alpha, &canvas_alpha_stride);
+    canvas_alpha_bytes = bytes_per_sample_for_bit_depth(get_bits_per_pixel(heif_channel_Alpha));
+    canvas_alpha_max = (1U << get_bits_per_pixel(heif_channel_Alpha)) - 1;
+  }
+
+  // --- compute the overlapping area once, for every plane
+  //
+  // The overlay covers [dx, dx+in_w) x [dy, dy+in_h) in canvas coordinates and
+  // may start outside the canvas on any side (ISO/IEC 23008-12 6.6.2.2.3 allows
+  // negative offsets; pixels outside the canvas are simply not shown). Intersect
+  // it with the canvas. All terms fit into int64_t, so this cannot overflow for
+  // int32 offsets and uint32 sizes. The copy region is described by its size and
+  // by its top-left corner in both images, which keeps the loops below free of
+  // any "end coordinate vs. count" ambiguity.
+  // check_plane_layout() guarantees that all overlay planes share the logical
+  // image size, so one intersection is valid for every channel.
+  const uint32_t in_w = overlay->get_width();
+  const uint32_t in_h = overlay->get_height();
+  const uint32_t out_w = get_width();
+  const uint32_t out_h = get_height();
+
+  const int64_t x0 = std::max<int64_t>(dx, 0);
+  const int64_t y0 = std::max<int64_t>(dy, 0);
+  const int64_t x1 = std::min<int64_t>(static_cast<int64_t>(dx) + in_w, out_w);
+  const int64_t y1 = std::min<int64_t>(static_cast<int64_t>(dy) + in_h, out_h);
+
+  if (x1 <= x0 || y1 <= y0) {
+    // the overlay image is completely outside the canvas -> nothing to draw, and
+    // in particular no canvas pixel (alpha included) is modified
+    return Error::Ok;
+  }
+
+  const uint32_t copy_w = static_cast<uint32_t>(x1 - x0);
+  const uint32_t copy_h = static_cast<uint32_t>(y1 - y0);
+
+  // top-left corner of the copied region in the canvas (out_*) and in the overlay (in_*)
+  const uint32_t out_x0 = static_cast<uint32_t>(x0);
+  const uint32_t out_y0 = static_cast<uint32_t>(y0);
+  const uint32_t in_x0 = static_cast<uint32_t>(x0 - dx);
+  const uint32_t in_y0 = static_cast<uint32_t>(y0 - dy);
 
   for (heif_channel channel : channels) {
-    if (!has_channel(channel)) {
+    if (!has_channel(channel) || channel == heif_channel_Alpha) {
+      // The canvas alpha plane is updated in its own pass below; an overlay
+      // alpha without a matching canvas alpha plane is consumed only.
       continue;
     }
 
     size_t in_stride = 0;
-    const uint8_t* in_p;
-
     size_t out_stride = 0;
-    uint8_t* out_p;
+    const uint8_t* in_p = overlay->get_channel_memory(channel, &in_stride);
+    uint8_t* out_p = get_channel_memory(channel, &out_stride);
 
-    in_p = overlay->get_channel_memory(channel, &in_stride);
-    out_p = get_channel_memory(channel, &out_stride);
-
-    uint32_t in_w = overlay->get_width(channel);
-    uint32_t in_h = overlay->get_height(channel);
-
-    uint32_t out_w = get_width(channel);
-    uint32_t out_h = get_height(channel);
-
-
-    // --- compute the overlapping area
-    //
-    // The overlay covers [dx, dx+in_w) x [dy, dy+in_h) in canvas coordinates and
-    // may start outside the canvas on any side (ISO/IEC 23008-12 6.6.2.2.3 allows
-    // negative offsets; pixels outside the canvas are simply not shown). Intersect
-    // it with the canvas [0, out_w) x [0, out_h). All terms fit into int64_t, so
-    // this cannot overflow for int32 offsets and uint32 sizes. The copy region is
-    // then described by its size and by its top-left corner in both images, which
-    // keeps the loop below free of any "end coordinate vs. count" ambiguity.
-    // Note: all components share the logical image size, so if the overlay
-    // image lies completely outside for one component it does so for all of
-    // them -> we can return instead of just skipping the current component.
-
-    const int64_t x0 = std::max<int64_t>(dx, 0);
-    const int64_t y0 = std::max<int64_t>(dy, 0);
-    const int64_t x1 = std::min<int64_t>(static_cast<int64_t>(dx) + in_w, out_w);
-    const int64_t y1 = std::min<int64_t>(static_cast<int64_t>(dy) + in_h, out_h);
-
-    if (x1 <= x0 || y1 <= y0) {
-      // the overlay image is completely outside the canvas -> nothing to draw
-      return Error::Ok;
-    }
-
-    const uint32_t copy_w = static_cast<uint32_t>(x1 - x0);
-    const uint32_t copy_h = static_cast<uint32_t>(y1 - y0);
-
-    // top-left corner of the copied region in the canvas (out_*) and in the overlay (in_*)
-    const uint32_t out_x0 = static_cast<uint32_t>(x0);
-    const uint32_t out_y0 = static_cast<uint32_t>(y0);
-    const uint32_t in_x0 = static_cast<uint32_t>(x0 - dx);
-    const uint32_t in_y0 = static_cast<uint32_t>(y0 - dy);
-
-    // --- composite the overlay in the overlapping area
+    // --- composite the overlay colors in the overlapping area
 
     const int bytes = bytes_per_sample_for_bit_depth(overlay->get_bits_per_pixel(channel)); // 1 or 2, checked above
 
@@ -2309,25 +2406,92 @@ Error HeifPixelImage::overlay(std::shared_ptr<HeifPixelImage>& overlay, int32_t 
       uint8_t* out_row = out_p + static_cast<size_t>(out_x0) * bytes + static_cast<size_t>(out_y0 + y) * out_stride;
 
       if (!has_alpha) {
+        // Opaque input: the color replaces the canvas color in the covered
+        // region. The canvas alpha is raised to opaque in the separate alpha
+        // pass below, so nothing alpha-related happens here.
         memcpy(out_row, in_row, static_cast<size_t>(copy_w) * bytes);
         continue;
       }
 
-      const uint8_t* alpha_row = alpha_p + static_cast<size_t>(in_x0) * alpha_bytes + static_cast<size_t>(in_y0 + y) * alpha_stride;
+      const uint8_t* alpha_row = alpha_p + static_cast<size_t>(in_x0) * alpha_bytes
+                                 + static_cast<size_t>(in_y0 + y) * alpha_stride;
 
-      if (bytes == 1 && alpha_bytes == 1) {
-        blend_row(out_row, in_row, alpha_row, copy_w, alpha_max);
-      }
-      else if (bytes == 1) {
-        blend_row(out_row, in_row, reinterpret_cast<const uint16_t*>(alpha_row), copy_w, alpha_max);
-      }
-      else if (alpha_bytes == 1) {
-        blend_row(reinterpret_cast<uint16_t*>(out_row), reinterpret_cast<const uint16_t*>(in_row),
-                  alpha_row, copy_w, alpha_max);
+      if (!canvas_has_alpha) {
+        if (bytes == 1 && alpha_bytes == 1) {
+          blend_row(out_row, in_row, alpha_row, copy_w, alpha_max);
+        }
+        else if (bytes == 1) {
+          blend_row(out_row, in_row, reinterpret_cast<const uint16_t*>(alpha_row), copy_w, alpha_max);
+        }
+        else if (alpha_bytes == 1) {
+          blend_row(reinterpret_cast<uint16_t*>(out_row), reinterpret_cast<const uint16_t*>(in_row),
+                    alpha_row, copy_w, alpha_max);
+        }
+        else {
+          blend_row(reinterpret_cast<uint16_t*>(out_row), reinterpret_cast<const uint16_t*>(in_row),
+                    reinterpret_cast<const uint16_t*>(alpha_row), copy_w, alpha_max);
+        }
       }
       else {
-        blend_row(reinterpret_cast<uint16_t*>(out_row), reinterpret_cast<const uint16_t*>(in_row),
-                  reinterpret_cast<const uint16_t*>(alpha_row), copy_w, alpha_max);
+        // Canvas and overlay alpha have the same depth (checked above). The
+        // canvas alpha is read-only in this color pass so that all three color
+        // channels see the same, unmodified incoming alpha.
+        const uint8_t* canvas_alpha_row = canvas_alpha_p
+                                          + static_cast<size_t>(out_x0) * canvas_alpha_bytes
+                                          + static_cast<size_t>(out_y0 + y) * canvas_alpha_stride;
+
+        if (bytes == 1) {
+          blend_row_color_with_canvas_alpha(out_row, canvas_alpha_row, in_row, alpha_row,
+                                            copy_w, alpha_max);
+        }
+        else {
+          blend_row_color_with_canvas_alpha(reinterpret_cast<uint16_t*>(out_row),
+                                            reinterpret_cast<const uint16_t*>(canvas_alpha_row),
+                                            reinterpret_cast<const uint16_t*>(in_row),
+                                            reinterpret_cast<const uint16_t*>(alpha_row),
+                                            copy_w, alpha_max);
+        }
+      }
+    }
+  }
+
+  // --- update the canvas alpha plane exactly once per covered pixel
+  //
+  // The color passes above only read the incoming canvas alpha. Updating it in a
+  // separate pass keeps the running alpha consistent for every color channel and
+  // prevents an overlay with an alpha plane from being applied once per channel
+  // (which used to raise 128 to 223 over the R, G and B passes). The guard above
+  // guarantees that the canvas and overlay alpha planes have the same depth, so
+  // both use alpha_max as their sample maximum.
+  if (canvas_has_alpha) {
+    for (uint32_t y = 0; y < copy_h; y++) {
+      uint8_t* canvas_alpha_row = canvas_alpha_p
+                                  + static_cast<size_t>(out_x0) * canvas_alpha_bytes
+                                  + static_cast<size_t>(out_y0 + y) * canvas_alpha_stride;
+
+      if (!has_alpha) {
+        if (canvas_alpha_bytes == 1) {
+          compose_alpha_row<uint8_t, uint8_t>(canvas_alpha_row, nullptr, copy_w, canvas_alpha_max,
+                                              /*overlay_is_opaque=*/true);
+        }
+        else {
+          compose_alpha_row<uint16_t, uint16_t>(reinterpret_cast<uint16_t*>(canvas_alpha_row), nullptr,
+                                                copy_w, canvas_alpha_max, /*overlay_is_opaque=*/true);
+        }
+        continue;
+      }
+
+      const uint8_t* alpha_row = alpha_p + static_cast<size_t>(in_x0) * alpha_bytes
+                                 + static_cast<size_t>(in_y0 + y) * alpha_stride;
+
+      if (canvas_alpha_bytes == 1) {
+        compose_alpha_row(canvas_alpha_row, alpha_row, copy_w, alpha_max,
+                          /*overlay_is_opaque=*/false);
+      }
+      else {
+        compose_alpha_row(reinterpret_cast<uint16_t*>(canvas_alpha_row),
+                          reinterpret_cast<const uint16_t*>(alpha_row),
+                          copy_w, alpha_max, /*overlay_is_opaque=*/false);
       }
     }
   }

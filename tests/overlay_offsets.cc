@@ -592,15 +592,15 @@ Planes decode_planar_rgb(heif_context* ctx, heif_item_id id)
   return px;
 }
 
-// The image handle of an overlay describes the canvas: R, G, B with its bit depth.
+// The image handle of an overlay describes the canvas: R, G, B and the canvas alpha.
 void require_canvas_description(const heif_image_handle* handle, int bits)
 {
   CHECK(heif_image_handle_get_luma_bits_per_pixel(handle) == bits);
   CHECK(heif_image_handle_get_chroma_bits_per_pixel(handle) == bits);
 
-  REQUIRE(heif_image_handle_get_number_of_components(handle) == 3);
+  REQUIRE(heif_image_handle_get_number_of_components(handle) == 4);
 
-  uint32_t ids[3];
+  uint32_t ids[4];
   heif_image_handle_get_used_component_ids(handle, ids);
   for (uint32_t id : ids) {
     CHECK(heif_image_handle_get_component_bits_per_pixel(handle, id) == bits);
