@@ -304,6 +304,34 @@ uint32_t heif_raw_sequence_sample_get_duration(const heif_raw_sequence_sample*);
 LIBHEIF_API
 void heif_context_set_sequence_timescale(heif_context*, uint32_t timescale);
 
+/**
+ * Rewrite the whole sequence to a new timescale: every track's media timescale
+ * and the sequence (movie) timescale are converted so that the sequence
+ * timebase, the per-frame durations and the total duration are expressed in
+ * one time unit.
+ *
+ * The per-frame durations are rounded on the cumulative timeline (not frame by
+ * frame), hence the frame start times and the total duration stay consistent
+ * and the conversion is reversible whenever the rounded frame start times are
+ * distinct.
+ *
+ * The rewrite is atomic: if the sequence cannot be converted (for example a
+ * frame would collapse to zero duration, a value overflows, or a track uses
+ * composition time offsets), an error is returned and the old sequence timing
+ * and frame order are left unchanged.
+ */
+LIBHEIF_API
+heif_error heif_context_rewrite_sequence_timescale(heif_context*, uint32_t timescale);
+
+/**
+ * Rewrite the media timescale of a single track, rescaling the per-sample
+ * durations with cumulative rounding (see
+ * heif_context_rewrite_sequence_timescale()). On error the track - and hence
+ * the old sequence timing and frame order - is left unchanged.
+ */
+LIBHEIF_API
+heif_error heif_track_rewrite_timescale(heif_track*, uint32_t timescale);
+
 // Number of times the sequence should be played in total (default = 1).
 // Can be set to heif_sequence_maximum_number_of_repetitions.
 LIBHEIF_API

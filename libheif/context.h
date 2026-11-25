@@ -227,6 +227,16 @@ public:
 
   void set_sequence_timescale(uint32_t timescale);
 
+  // Rewrite the whole sequence to a new timescale: every track's media
+  // timescale and the sequence (movie) timescale are converted so that the
+  // sequence timebase, the per-frame durations and the total duration are
+  // expressed in one time unit. Per-frame durations are rounded on the
+  // cumulative timeline, keeping the frame start times and the total duration
+  // consistent (and the conversion reversible). The rewrite is atomic: if any
+  // track cannot be converted, an error is returned and the old sequence
+  // timing and frame order are left unchanged.
+  Error rewrite_sequence_timescale(uint32_t timescale);
+
   void set_number_of_sequence_repetitions(uint32_t repetitions);
 
   Result<std::shared_ptr<class Track_Visual>> add_visual_sequence_track(const TrackOptions*, uint32_t handler_type,

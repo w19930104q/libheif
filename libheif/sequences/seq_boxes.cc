@@ -683,6 +683,17 @@ void Box_stts::append_sample_duration(uint32_t duration)
 }
 
 
+void Box_stts::set_sample_durations(const std::vector<uint32_t>& durations)
+{
+  m_entries.clear();
+  m_entries.reserve(durations.size());
+
+  for (uint32_t duration : durations) {
+    append_sample_duration(duration);
+  }
+}
+
+
 uint64_t Box_stts::get_total_duration(bool include_last_frame_duration)
 {
   uint64_t total = 0;

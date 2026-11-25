@@ -373,6 +373,14 @@ public:
 
   void append_sample_duration(uint32_t duration);
 
+  // Replace the whole table with one duration per sample (run-length compressed
+  // like append_sample_duration() builds it). The sample count and the sample
+  // order are preserved; used when the track timing is rewritten to a new
+  // timescale. Like the encoder-built table, the entries are not accounted
+  // against the memory limits: their number is bounded by the sample count,
+  // which parse() already checked against max_sequence_frames.
+  void set_sample_durations(const std::vector<uint32_t>& durations);
+
   uint64_t get_total_duration(bool include_last_frame_duration);
 
   uint32_t get_number_of_samples() const;
@@ -1043,6 +1051,8 @@ public:
   size_t num_entries() const { return m_entries.size(); }
 
   Entry get_entry(uint32_t entry) const { return m_entries[entry]; }
+
+  void set_entry(uint32_t entry, const Entry& e) { m_entries[entry] = e; }
 
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;

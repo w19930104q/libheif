@@ -180,6 +180,42 @@ public:
   // The context will compute the duration in global movie units and set this.
   void set_track_duration_in_movie_units(uint64_t total_duration, uint64_t segment_duration);
 
+  // --- rewriting the track timing to a new timescale
+
+  // The rewritten timing of a track, computed by plan_track_timescale_rewrite()
+  // and committed by apply_track_timescale_rewrite(). Splitting planning from
+  // applying lets HeifContext rewrite all tracks of a sequence atomically: if
+  // any track cannot be converted, no track is modified and the old sequence
+  // timing and frame order are preserved.
+  struct TimescaleRewrite {
+    uint32_t new_timescale = 0;
+    std::vector<uint32_t> sample_durations; // one per sample, in the new timescale
+    uint64_t total_duration = 0;            // sum of sample_durations
+    uint64_t tkhd_duration = 0;             // track duration in movie units
+    std::vector<uint64_t> elst_segment_durations; // editlist segment durations in movie units
+  };
+
+  // Compute the track timing in a new media timescale without modifying the
+  // track. The per-sample durations are rounded on the cumulative timeline
+  // (rescale_sample_durations_to_timescale()), so the frame order, the
+  // per-frame start times and the total duration stay consistent within the
+  // new time unit. If old/new_movie_timescale are nonzero and differ, the
+  // movie-unit durations (tkhd, editlist) are rescaled with the same rounding
+  // rule as well.
+  // Fails when the track uses composition (ctts) offsets, when a sample would
+  // collapse to zero duration, or when a value overflows.
+  Result<TimescaleRewrite> plan_track_timescale_rewrite(uint32_t new_timescale,
+                                                        uint32_t old_movie_timescale = 0,
+                                                        uint32_t new_movie_timescale = 0) const;
+
+  // Commit a plan returned by plan_track_timescale_rewrite(). Infallible: all
+  // failing cases are detected during planning.
+  void apply_track_timescale_rewrite(const TimescaleRewrite& rewrite);
+
+  // Rewrite the track's media timescale in place. On error the track - and
+  // hence the old sequence timing and frame order - is left unchanged.
+  Error rewrite_track_timescale(uint32_t new_timescale);
+
   void enable_edit_list_repeat_mode(bool enable);
 
   std::shared_ptr<Box_taic> get_first_cluster_taic() { return m_first_taic; }

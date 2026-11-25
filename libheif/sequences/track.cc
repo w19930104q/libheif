@@ -23,6 +23,7 @@
 #include "context.h"
 #include "sequences/seq_boxes.h"
 #include "sequences/chunk.h"
+#include "sequences/sequence_timing.h"
 #include "sequences/track_visual.h"
 #include "sequences/track_metadata.h"
 #include "api_structs.h"
@@ -929,6 +930,153 @@ void Track::set_track_duration_in_movie_units(uint64_t total_duration, uint64_t 
 
     m_elst->add_entry(entry);
   }
+}
+
+
+Result<Track::TimescaleRewrite> Track::plan_track_timescale_rewrite(uint32_t new_timescale,
+                                                                    uint32_t old_movie_timescale,
+                                                                    uint32_t new_movie_timescale) const
+{
+  if (new_timescale == 0) {
+    return Error{
+      heif_error_Invalid_input,
+      heif_suberror_Unspecified,
+      "The track timescale may not be 0."
+    };
+  }
+
+  TimescaleRewrite rewrite;
+  rewrite.new_timescale = new_timescale;
+
+  // --- media-level durations (stts, mdhd)
+
+  uint32_t old_timescale = get_timescale();
+  uint32_t num_samples = m_stts ? m_stts->get_number_of_samples() : 0;
+
+  if (num_samples == 0) {
+    // No samples: there is no stts table to derive the total from, so rescale
+    // the stored media duration directly.
+    rewrite.total_duration = m_mdhd->get_duration();
+    if (new_timescale != old_timescale && old_timescale != 0) {
+      auto durationResult = rescale_duration_to_timescale(rewrite.total_duration,
+                                                          old_timescale, new_timescale);
+      if (!durationResult) {
+        return durationResult.error();
+      }
+      rewrite.total_duration = *durationResult;
+    }
+  }
+  else if (new_timescale == old_timescale) {
+    // The track already uses the requested timescale: keep the current
+    // durations unchanged.
+    rewrite.sample_durations.reserve(num_samples);
+    for (uint32_t i = 0; i < num_samples; i++) {
+      rewrite.sample_durations.push_back(m_stts->get_sample_duration(i));
+    }
+    rewrite.total_duration = m_stts->get_total_duration(true);
+  }
+  else {
+    // Composition offsets are media-time quantities tied to the current frame
+    // durations; rescaling them would have to reorder the composition timeline
+    // along with the decoding timeline. Refuse such tracks instead of silently
+    // corrupting the presentation order.
+    if (m_ctts) {
+      uint32_t num_offsets = m_ctts->get_number_of_samples();
+      for (uint32_t i = 0; i < num_offsets; i++) {
+        if (m_ctts->get_sample_offset(i) != 0) {
+          return Error{
+            heif_error_Unsupported_feature,
+            heif_suberror_Unspecified,
+            "Cannot rewrite the timescale of a track with composition time offsets."
+          };
+        }
+      }
+    }
+
+    std::vector<uint32_t> durations;
+    durations.reserve(num_samples);
+    for (uint32_t i = 0; i < num_samples; i++) {
+      durations.push_back(m_stts->get_sample_duration(i));
+    }
+
+    // Rounding is anchored at the cumulative (total) timeline, so the frame
+    // order and the per-frame start times survive the conversion and the
+    // rescaled durations add up to the rescaled total duration exactly.
+    auto rescaledResult = rescale_sample_durations_to_timescale(durations, old_timescale, new_timescale);
+    if (!rescaledResult) {
+      return rescaledResult.error();
+    }
+
+    rewrite.sample_durations = std::move(*rescaledResult);
+    for (uint32_t duration : rewrite.sample_durations) {
+      rewrite.total_duration += duration;
+    }
+  }
+
+  // --- movie-level durations (tkhd, editlist)
+
+  rewrite.tkhd_duration = m_tkhd ? m_tkhd->get_duration() : 0;
+  if (m_elst) {
+    for (uint32_t i = 0; i < m_elst->num_entries(); i++) {
+      rewrite.elst_segment_durations.push_back(m_elst->get_entry(i).segment_duration);
+    }
+  }
+
+  if (old_movie_timescale != 0 && new_movie_timescale != 0 &&
+      old_movie_timescale != new_movie_timescale) {
+    auto tkhdResult = rescale_duration_to_timescale(rewrite.tkhd_duration,
+                                                    old_movie_timescale, new_movie_timescale);
+    if (!tkhdResult) {
+      return tkhdResult.error();
+    }
+    rewrite.tkhd_duration = *tkhdResult;
+
+    for (auto& segment_duration : rewrite.elst_segment_durations) {
+      auto segmentResult = rescale_duration_to_timescale(segment_duration,
+                                                         old_movie_timescale, new_movie_timescale);
+      if (!segmentResult) {
+        return segmentResult.error();
+      }
+      segment_duration = *segmentResult;
+    }
+  }
+
+  return rewrite;
+}
+
+
+void Track::apply_track_timescale_rewrite(const TimescaleRewrite& rewrite)
+{
+  if (m_stts && !rewrite.sample_durations.empty()) {
+    m_stts->set_sample_durations(rewrite.sample_durations);
+  }
+
+  m_mdhd->set_timescale(rewrite.new_timescale);
+  m_mdhd->set_duration(rewrite.total_duration);
+
+  if (m_tkhd) {
+    m_tkhd->set_duration(rewrite.tkhd_duration);
+  }
+
+  if (m_elst) {
+    for (uint32_t i = 0; i < m_elst->num_entries() && i < rewrite.elst_segment_durations.size(); i++) {
+      auto entry = m_elst->get_entry(i);
+      entry.segment_duration = rewrite.elst_segment_durations[i];
+      m_elst->set_entry(i, entry);
+    }
+  }
+}
+
+
+Error Track::rewrite_track_timescale(uint32_t new_timescale)
+{
+  auto planResult = plan_track_timescale_rewrite(new_timescale);
+  if (!planResult) {
+    return planResult.error();
+  }
+
+  apply_track_timescale_rewrite(*planResult);
+  return Error::Ok;
 }
 
 

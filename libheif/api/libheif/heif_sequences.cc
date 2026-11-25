@@ -367,6 +367,20 @@ void heif_context_set_sequence_timescale(heif_context* ctx, uint32_t timescale)
 }
 
 
+heif_error heif_context_rewrite_sequence_timescale(heif_context* ctx, uint32_t timescale)
+{
+  Error err = ctx->context->rewrite_sequence_timescale(timescale);
+  return err.error_struct(ctx->context.get());
+}
+
+
+heif_error heif_track_rewrite_timescale(heif_track* track, uint32_t timescale)
+{
+  Error err = track->track->rewrite_track_timescale(timescale);
+  return err.error_struct(track->context.get());
+}
+
+
 void heif_context_set_number_of_sequence_repetitions(heif_context* ctx, uint32_t repetitions)
 {
   ctx->context->set_number_of_sequence_repetitions(repetitions);

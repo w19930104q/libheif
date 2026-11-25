@@ -37,6 +37,7 @@
 #include "sequences/track.h"
 #include "sequences/track_visual.h"
 #include "sequences/track_metadata.h"
+#include "sequences/sequence_timing.h"
 #include "libheif/heif_sequences.h"
 
 #if ENABLE_PARALLEL_TILE_DECODING
@@ -385,7 +386,16 @@ static uint64_t rescale(uint64_t duration, uint32_t old_base, uint32_t new_base)
     return 0;
   }
 
-  return duration * new_base / old_base;
+  // Round to nearest - the same rule the per-frame durations are rescaled with
+  // (rescale_sample_durations_to_timescale()) - so that the movie-level total
+  // duration and the cumulative frame start times are converted within one
+  // consistent time-unit table. Saturate instead of wrapping on overflow.
+  auto result = rescale_duration_to_timescale(duration, old_base, new_base);
+  if (!result) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+
+  return *result;
 }
 
 
@@ -2288,6 +2298,65 @@ void HeifContext::set_sequence_timescale(uint32_t timescale)
   */
 
   mvhd->set_time_scale(timescale);
+}
+
+
+Error HeifContext::rewrite_sequence_timescale(uint32_t timescale)
+{
+  if (timescale == 0) {
+    return {
+      heif_error_Invalid_input,
+      heif_suberror_Unspecified,
+      "The sequence timescale may not be 0."
+    };
+  }
+
+  auto mvhd = m_heif_file->get_mvhd_box();
+  if (!mvhd) {
+    return {
+      heif_error_Invalid_input,
+      heif_suberror_Unspecified,
+      "Cannot rewrite the sequence timescale: the context has no sequence."
+    };
+  }
+
+  // --- plan the rewrite of every track and of the movie header first, so
+  // that a failure leaves the old sequence timing and frame order untouched.
+
+  uint32_t old_movie_timescale = mvhd->get_time_scale();
+
+  std::vector<std::pair<std::shared_ptr<Track>, Track::TimescaleRewrite>> track_plans;
+  for (const auto& track : m_tracks) {
+    auto planResult = track.second->plan_track_timescale_rewrite(timescale,
+                                                                 old_movie_timescale, timescale);
+    if (!planResult) {
+      return planResult.error();
+    }
+
+    track_plans.emplace_back(track.second, std::move(*planResult));
+  }
+
+  uint64_t new_movie_duration = mvhd->get_duration();
+  if (!mvhd->is_duration_indefinite() && old_movie_timescale != 0 &&
+      old_movie_timescale != timescale) {
+    auto durationResult = rescale_duration_to_timescale(mvhd->get_duration(),
+                                                        old_movie_timescale, timescale);
+    if (!durationResult) {
+      return durationResult.error();
+    }
+    new_movie_duration = *durationResult;
+  }
+
+  // --- commit
+
+  for (const auto& plan : track_plans) {
+    plan.first->apply_track_timescale_rewrite(plan.second);
+  }
+
+  mvhd->set_duration(new_movie_duration);
+  mvhd->set_time_scale(timescale);
+
+  return Error::Ok;
 }
 
 

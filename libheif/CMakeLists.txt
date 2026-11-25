@@ -186,6 +186,8 @@ set(libheif_sources
         sequences/seq_boxes.cc
         sequences/chunk.h
         sequences/chunk.cc
+        sequences/sequence_timing.h
+        sequences/sequence_timing.cc
         sequences/track.h
         sequences/track.cc
         sequences/track_visual.h
