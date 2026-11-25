@@ -108,7 +108,8 @@ Error unc_decoder_mixed_interleave::decode_tile(const std::vector<uint8_t>& tile
 
   processTile(srcBits, out_x0, out_y0);
 
-  return Error::Ok;
+  // Reject a short tile instead of decoding the missing samples as zeros.
+  return srcBits.check_no_overrun("mixed-interleave");
 }
 
 

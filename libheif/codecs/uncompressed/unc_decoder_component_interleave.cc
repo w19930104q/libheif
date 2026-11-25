@@ -136,7 +136,10 @@ Error unc_decoder_component_interleave::decode_tile(const std::vector<uint8_t>& 
     }
   }
 
-  return Error::Ok;
+  // The tile buffer has to hold every sample the 'uncC' layout asks for. With too
+  // few bytes BitReader returns zero bits and the missing samples would be stored
+  // as zeros while the decode still reports success, exposing a half-filled image.
+  return srcBits.check_no_overrun("component-interleave");
 }
 
 

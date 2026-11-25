@@ -27,6 +27,7 @@
 #include <map>
 #include <iostream>
 #include <cassert>
+#include <string>
 #include <utility>
 #include <vector>
 #include <memory>
@@ -46,6 +47,31 @@ class UncompressedBitReader : public BitReader
 {
 public:
   UncompressedBitReader(const std::vector<uint8_t>& data) : BitReader(data.data(), data.size()) {}
+
+  // BitReader::get_bits() never fails: reading past the end of the buffer returns
+  // zero bits. The 'iloc' extent length already rejects files whose tile data is
+  // shorter than the layout declared in 'uncC', but a decoder must not rely on that
+  // alone -- the compressed-unit path and the per-tile entry point hand over buffers
+  // whose size is checked elsewhere, and any mismatch would otherwise be rendered as
+  // silently zero-filled samples (a half-filled image reported as a successful decode).
+  // Every tile decoder calls this after the last sample of the tile has been read so
+  // that an overrun turns into an explicit error instead of zero-valued pixels.
+  bool has_overrun() const
+  {
+    return get_bits_remaining() < 0;
+  }
+
+  Error check_no_overrun(const char* interleave_name) const
+  {
+    if (has_overrun()) {
+      return {heif_error_Invalid_input,
+              heif_suberror_End_of_data,
+              std::string("uncompressed ") + interleave_name +
+                  " tile contains less data than declared in 'uncC'"};
+    }
+
+    return Error::Ok;
+  }
 
   void markPixelStart()
   {

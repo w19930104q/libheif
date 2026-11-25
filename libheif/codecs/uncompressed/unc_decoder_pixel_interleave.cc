@@ -96,7 +96,13 @@ Error unc_decoder_pixel_interleave::decode_tile(const std::vector<uint8_t>& tile
 {
   UncompressedBitReader srcBits(tile_data);
 
-  return processTile(srcBits, out_x0, out_y0);
+  Error err = processTile(srcBits, out_x0, out_y0);
+  if (err) {
+    return err;
+  }
+
+  // Reject a short tile instead of decoding the missing samples as zeros.
+  return srcBits.check_no_overrun("pixel-interleave");
 }
 
 
